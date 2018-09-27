@@ -35,7 +35,9 @@ class TimelineData extends AbstractPlugin {
    */
   public function __invoke(array $itemPool, array $args, $block) {
     $events = [];
-     $items = [];
+    $items = [];
+    $captions = [];
+    $delimiters = [' ', '/'];
     $this->renderYear = isset($args['render_year'])
       ? $args['render_year']
       : self::RENDER_YEAR_DEFAULT;
@@ -51,10 +53,10 @@ class TimelineData extends AbstractPlugin {
         ->read('items', $attachment->getItem()->getId())
         ->getContent();
       $items[] = $attachment_item;
-
+      $captions[$attachment_item->id()] = $attachment->getCaption();
     }
 
-    foreach ($items as $item) {
+    foreach ($items as $index => $item) {
       // All items without dates are already automatically removed.
       $itemDates = $item->value($propertyItemDate, [
         'all' => TRUE,
@@ -68,12 +70,18 @@ class TimelineData extends AbstractPlugin {
       if ($itemTitle) {
         $itemTitle = strip_tags($itemTitle->value());
       }
-      $itemDescription = $item->value($propertyItemDescription, [
-        'type' => 'literal',
-        'default' => '',
-      ]);
-      if ($itemDescription) {
-        $itemDescription = $this->snippet($itemDescription->value(), 200);
+      // Use caption from Showcase if present, default to item description
+      if (isset($captions[$item->id()])) {
+        $itemDescription = $captions[$item->id()];
+      }
+      else {
+        $itemDescription = $item->value($propertyItemDescription, [
+          'type' => 'literal',
+          'default' => '',
+        ]);
+        if ($itemDescription) {
+          $itemDescription = $this->snippet($itemDescription->value(), 200);
+        }
       }
       $itemDatesEnd = $propertyItemDateEnd
         ? $item->value($propertyItemDateEnd, [
@@ -86,17 +94,29 @@ class TimelineData extends AbstractPlugin {
         ? NULL
         : $item->siteUrl($args['site-slug']);
       $media = $item->primaryMedia();
-      $mediaUrl = $media ? $media->thumbnailUrl('square') : NULL;
+      $mediaUrl = $media ? $media->thumbnailUrl('large') : NULL;
+      $mediaDerivatives = [];
+      if ($media) {
+        $mediaDerivatives = $media->thumbnailUrls();
+        $mediaDerivatives['original'] = $media->originalUrl();
+      }
       foreach ($itemDates as $key => $valueItemDate) {
         $event = [];
-        $itemDate = $valueItemDate->value();
+        $has_day = 'false';
+        $itemDate = trim($valueItemDate->value());
+        $itemDate = str_replace($delimiters, '-', $itemDate);
+        $date_parts = explode('-', $itemDate);
+        if (count($date_parts) > 2) {
+          $has_day = 'true';
+        }
+        $event['has_day'] = $has_day;
         if (empty($itemDatesEnd[$key])) {
           list($dateStart, $dateEnd) = $this->convertAnyDate($itemDate, $this->renderYear);
         }
         else {
           list($dateStart, $dateEnd) = $this->convertTwoDates($itemDate, $itemDatesEnd[$key]->value(), $this->renderYear);
         }
-        if (empty($dateStart)) {
+        if (empty($dateStart) && $index > 0) {
           continue;
         }
         $event['start'] = $dateStart;
@@ -106,15 +126,32 @@ class TimelineData extends AbstractPlugin {
         $event['title'] = $itemTitle;
         $event['link'] = $itemLink;
         $event['classname'] = $this->itemClass($item);
-        if ($mediaUrl) {
+        if ($media) {
           $event['image'] = $mediaUrl;
+          $event['thumbnail'] = $mediaDerivatives['square'];
+          $event['image_derivatives'] = $mediaDerivatives;
         }
         $event['description'] = $itemDescription;
         $events[] = $event;
       }
     }
-
     $data = [];
+
+    // Build title
+    if ($args['title_slide'] == 'yes') {
+      $title_slide = array_shift($events);
+      $data['title']['media'] = [
+        "url" => $title_slide['image'],
+        "caption" => $title_slide['description'],
+      ];
+      $data['title']['text'] = [
+        "headline" => $title_slide['title'],
+        "text" => "<p>{$title_slide['description']}</p>",
+      ];
+    }
+    else {
+      $data['title'] = $this->getBlankTitleSlide();
+    }
     $data['dateTimeFormat'] = 'iso8601';
     $data['events'] = $events;
 
@@ -412,4 +449,17 @@ class TimelineData extends AbstractPlugin {
     $id = trim($id, $delimiter);
     return $prepend ? $prepend . $delimiter . $id : $id;
   }
+
+  protected function getBlankTitleSlide() {
+    $data['title']['media'] = [
+      "url" => '',
+      "caption" => '',
+    ];
+    $data['title']['text'] = [
+      "headline" => '',
+      "text" => '',
+    ];
+    return $data['title'];
+  }
+
 }
